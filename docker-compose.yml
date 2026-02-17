@@ -1,0 +1,16 @@
+services:
+  wikijs-mcp:
+    build: .
+    ports:
+      - "${MCP_PORT:-8000}:8000"
+    env_file: .env
+    restart: unless-stopped
+    # Drop all Linux capabilities — this server only needs network I/O
+    cap_drop:
+      - ALL
+    # Read-only root filesystem; writable tmpfs for uvicorn temp files
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
