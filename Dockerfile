@@ -5,12 +5,10 @@ RUN useradd -m -u 1000 mcp
 
 WORKDIR /app
 
-# Install dependencies before copying source (better layer caching)
+# Copy source then install (hatchling editable install requires source present)
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e . && pip install --no-cache-dir curl
-
-# Copy application source
 COPY src/ src/
+RUN pip install --no-cache-dir .
 
 # Switch to non-root user
 USER mcp
