@@ -48,13 +48,16 @@ class WikiJSClient:
             httpx.HTTPStatusError: On non-2xx HTTP responses.
         """
         data = await self._execute(gql, variables)
-        # Walk one level into data → mutation key → responseResult
-        for _mutation_key, payload in data.items():
-            if isinstance(payload, dict) and "responseResult" in payload:
-                result = payload["responseResult"]
-                if not result.get("succeeded", False):
-                    msg = result.get("message") or f"errorCode={result.get('errorCode')}"
-                    raise WikiJSError(msg)
+        # Walk data → namespace (e.g. "pages") → operation (e.g. "create") → responseResult
+        for _namespace, namespace_payload in data.items():
+            if isinstance(namespace_payload, dict):
+                for _op, op_payload in namespace_payload.items():
+                    if isinstance(op_payload, dict) and "responseResult" in op_payload:
+                        result = op_payload["responseResult"]
+                        if not result.get("succeeded", False):
+                            msg = result.get("message") or f"errorCode={result.get('errorCode')}"
+                            raise WikiJSError(msg)
+                    break
             break
         return data
 

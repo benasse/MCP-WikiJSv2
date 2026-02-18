@@ -27,7 +27,7 @@ _PAGE_FULL_FIELDS = "id path title description content locale editor isPublished
 
 def _page_summary_to_md(page: dict) -> str:
     lines = [
-        f"## {page.get('title', '(untitled)')} (id: {page.get('id')})",
+        f"## {page.get('title') or '(untitled)'} (id: {page.get('id')})",
         f"- **Path**: `{page.get('path')}`",
         f"- **Locale**: {page.get('locale')}",
     ]
@@ -40,7 +40,7 @@ def _page_summary_to_md(page: dict) -> str:
 def _page_full_to_md(page: dict) -> str:
     tags = [t["tag"] for t in (page.get("tags") or [])]
     lines = [
-        f"# {page.get('title', '(untitled)')} (id: {page.get('id')})",
+        f"# {page.get('title') or '(untitled)'} (id: {page.get('id')})",
         f"- **Path**: `{page.get('path')}`",
         f"- **Locale**: {page.get('locale')}",
         f"- **Editor**: {page.get('editor')}",
