@@ -1,26 +1,20 @@
 """Wiki.js page tools registered with FastMCP."""
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, Optional, List
+
+from mcp.server.fastmcp import Context
+from pydantic import Field
 
 from ..errors import _handle_api_error
-from ..models import (
-    ResponseFormat,
-    SearchPagesInput,
-    ListPagesInput,
-    GetPageInput,
-    GetPageByPathInput,
-    CreatePageInput,
-    UpdatePageInput,
-    DeletePageInput,
-)
+from ..models import ResponseFormat
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP, Context
+    from mcp.server.fastmcp import FastMCP
 
 
 # ---------------------------------------------------------------------------
-# GraphQL fragments
+# GraphQL field sets
 # ---------------------------------------------------------------------------
 
 _PAGE_SUMMARY_FIELDS = "id path title description locale createdAt updatedAt"
@@ -74,6 +68,10 @@ def _paginate(items: list, limit: int, offset: int) -> dict:
     }
 
 
+def _client(ctx: Context):
+    return ctx.request_context.lifespan_context["client"]
+
+
 # ---------------------------------------------------------------------------
 # Tool registration
 # ---------------------------------------------------------------------------
@@ -91,38 +89,29 @@ def register_page_tools(mcp: "FastMCP") -> None:
             "openWorldHint": True,
         },
     )
-    async def wikijs_search_pages(params: SearchPagesInput, ctx: "Context") -> str:
+    async def wikijs_search_pages(
+        ctx: Context,
+        query: Annotated[str, Field(description="Full-text search query (e.g. 'installation guide')", min_length=1, max_length=500)],
+        response_format: Annotated[ResponseFormat, Field(description="Output format: 'json' or 'markdown'")] = ResponseFormat.JSON,
+    ) -> str:
         """Search Wiki.js pages by full-text query.
 
-        Searches the full text index of all Wiki.js pages and returns ranked
-        results with page IDs, titles, paths, descriptions, and locales.
-
-        Args:
-            params (SearchPagesInput): Validated input containing:
-                - query (str): Search terms (e.g. 'docker installation guide')
-                - response_format (str): 'json' (default) or 'markdown'
+        Searches the full text index of all Wiki.js pages and returns ranked results.
 
         Returns:
-            str: JSON or Markdown list of matching pages with fields:
-                id, title, path, description, locale.
-                Includes `totalHits` and `suggestions` from Wiki.js.
+            JSON: {totalHits, suggestions, results: [{id, title, path, description, locale}]}
+            Markdown: formatted list of matching pages.
 
         Examples:
-            - Find pages about Docker: query='docker'
-            - Search for installation steps: query='install setup'
+            - Find Docker pages: query='docker'
+            - Find installation guides: query='install setup'
         """
-        client = ctx.request_context.lifespan_state["client"]
+        client = _client(ctx)
         gql = """
         query SearchPages($query: String!) {
           pages {
             search(query: $query) {
-              results {
-                id
-                title
-                path
-                description
-                locale
-              }
+              results { id title path description locale }
               suggestions
               totalHits
             }
@@ -130,7 +119,7 @@ def register_page_tools(mcp: "FastMCP") -> None:
         }
         """
         try:
-            data = await client.query(gql, {"query": params.query})
+            data = await client.query(gql, {"query": query})
             search = data["pages"]["search"]
             results = search.get("results", [])
             total_hits = search.get("totalHits", 0)
@@ -138,14 +127,10 @@ def register_page_tools(mcp: "FastMCP") -> None:
 
             if not results:
                 hint = f" Suggestions: {', '.join(suggestions)}" if suggestions else ""
-                return f"No pages found matching '{params.query}'.{hint}"
+                return f"No pages found matching '{query}'.{hint}"
 
-            if params.response_format == ResponseFormat.MARKDOWN:
-                lines = [
-                    f"# Search Results: '{params.query}'",
-                    f"Found {total_hits} matching page(s).",
-                    "",
-                ]
+            if response_format == ResponseFormat.MARKDOWN:
+                lines = [f"# Search Results: '{query}'", f"Found {total_hits} matching page(s).", ""]
                 for page in results:
                     lines.append(_page_summary_to_md(page))
                     lines.append("")
@@ -153,10 +138,7 @@ def register_page_tools(mcp: "FastMCP") -> None:
                     lines.append(f"**Suggestions**: {', '.join(suggestions)}")
                 return "\n".join(lines)
 
-            return json.dumps(
-                {"totalHits": total_hits, "suggestions": suggestions, "results": results},
-                indent=2,
-            )
+            return json.dumps({"totalHits": total_hits, "suggestions": suggestions, "results": results}, indent=2)
         except Exception as e:
             return _handle_api_error(e)
 
@@ -170,30 +152,27 @@ def register_page_tools(mcp: "FastMCP") -> None:
             "openWorldHint": True,
         },
     )
-    async def wikijs_list_pages(params: ListPagesInput, ctx: "Context") -> str:
+    async def wikijs_list_pages(
+        ctx: Context,
+        limit: Annotated[int, Field(description="Maximum pages to return (1–100)", ge=1, le=100)] = 20,
+        offset: Annotated[int, Field(description="Number of pages to skip for pagination", ge=0)] = 0,
+        order_by: Annotated[str, Field(description="Sort order: 'TITLE', 'PATH', 'CREATED', or 'UPDATED'")] = "TITLE",
+        response_format: Annotated[ResponseFormat, Field(description="Output format: 'json' or 'markdown'")] = ResponseFormat.JSON,
+    ) -> str:
         """List all Wiki.js pages with optional sorting and pagination.
 
-        Returns a paginated list of pages ordered by the chosen field. Use
-        `offset` and `limit` to page through large wikis.
-
-        Args:
-            params (ListPagesInput): Validated input containing:
-                - limit (int): Pages per page, 1–100 (default 20)
-                - offset (int): Starting index (default 0)
-                - order_by (str): 'TITLE', 'PATH', 'CREATED', or 'UPDATED'
-                - response_format (str): 'json' or 'markdown'
+        Returns a paginated list ordered by the chosen field.
 
         Returns:
-            str: Paginated result with keys: total, count, offset, items,
-                 has_more, next_offset. Each item: id, path, title, locale,
-                 createdAt, updatedAt.
+            JSON: {total, count, offset, items: [{id, path, title, locale, createdAt, updatedAt}], has_more, next_offset}
 
         Examples:
             - List first 20 pages: use defaults
-            - Next page: offset=20, limit=20
-            - Sorted by update time: order_by='UPDATED'
+            - Next page: offset=20
+            - Sort by update time: order_by='UPDATED'
         """
-        client = ctx.request_context.lifespan_state["client"]
+        client = _client(ctx)
+        order_by = order_by.upper()
         gql = f"""
         query ListPages($orderBy: PageOrderBy) {{
           pages {{
@@ -204,18 +183,17 @@ def register_page_tools(mcp: "FastMCP") -> None:
         }}
         """
         try:
-            data = await client.query(gql, {"orderBy": params.order_by})
+            data = await client.query(gql, {"orderBy": order_by})
             all_pages = data["pages"]["list"]
-            page_slice = _paginate(all_pages, params.limit, params.offset)
+            page_slice = _paginate(all_pages, limit, offset)
 
-            if params.response_format == ResponseFormat.MARKDOWN:
-                items = page_slice["items"]
+            if response_format == ResponseFormat.MARKDOWN:
                 lines = [
-                    f"# Wiki.js Pages (sorted by {params.order_by})",
+                    f"# Wiki.js Pages (sorted by {order_by})",
                     f"Showing {page_slice['count']} of {page_slice['total']} pages (offset {page_slice['offset']}).",
                     "",
                 ]
-                for page in items:
+                for page in page_slice["items"]:
                     lines.append(_page_summary_to_md(page))
                     lines.append("")
                 if page_slice["has_more"]:
@@ -236,28 +214,21 @@ def register_page_tools(mcp: "FastMCP") -> None:
             "openWorldHint": True,
         },
     )
-    async def wikijs_get_page(params: GetPageInput, ctx: "Context") -> str:
-        """Fetch the full content and metadata of a Wiki.js page by its numeric ID.
-
-        Use this when you already know the page ID (e.g. from search results or
-        the list tool). Returns the complete page including content body.
-
-        Args:
-            params (GetPageInput): Validated input containing:
-                - page_id (int): Numeric page ID (e.g. 15)
-                - response_format (str): 'json' or 'markdown'
+    async def wikijs_get_page(
+        ctx: Context,
+        page_id: Annotated[int, Field(description="Numeric page ID (e.g. 15)", ge=1)],
+        response_format: Annotated[ResponseFormat, Field(description="Output format: 'json' or 'markdown'")] = ResponseFormat.JSON,
+    ) -> str:
+        """Fetch full content and metadata of a Wiki.js page by its numeric ID.
 
         Returns:
-            str: Full page data including: id, path, title, description,
-                 content, locale, editor, isPublished, isPrivate, tags,
-                 createdAt, updatedAt.
-
-            Error response: "Error: <message>" string.
+            JSON: {id, path, title, description, content, locale, editor,
+                   isPublished, isPrivate, tags, createdAt, updatedAt}
 
         Examples:
-            - Get page with ID 15: page_id=15
+            - Get page 15: page_id=15
         """
-        client = ctx.request_context.lifespan_state["client"]
+        client = _client(ctx)
         gql = f"""
         query GetPage($id: Int!) {{
           pages {{
@@ -268,15 +239,12 @@ def register_page_tools(mcp: "FastMCP") -> None:
         }}
         """
         try:
-            data = await client.query(gql, {"id": params.page_id})
+            data = await client.query(gql, {"id": page_id})
             page = data["pages"]["single"]
             if page is None:
-                return f"Error: Page with ID {params.page_id} not found."
-
-            if params.response_format == ResponseFormat.MARKDOWN:
+                return f"Error: Page with ID {page_id} not found."
+            if response_format == ResponseFormat.MARKDOWN:
                 return _page_full_to_md(page)
-
-            # Flatten tags for JSON
             page["tags"] = [t["tag"] for t in (page.get("tags") or [])]
             return json.dumps(page, indent=2)
         except Exception as e:
@@ -292,26 +260,24 @@ def register_page_tools(mcp: "FastMCP") -> None:
             "openWorldHint": True,
         },
     )
-    async def wikijs_get_page_by_path(params: GetPageByPathInput, ctx: "Context") -> str:
-        """Fetch the full content and metadata of a Wiki.js page by its URL path.
+    async def wikijs_get_page_by_path(
+        ctx: Context,
+        path: Annotated[str, Field(description="Page URL path, e.g. 'home' or 'guides/installation'", min_length=1)],
+        locale: Annotated[str, Field(description="Locale code, e.g. 'en' (default 'en')", min_length=2, max_length=10)] = "en",
+        response_format: Annotated[ResponseFormat, Field(description="Output format: 'json' or 'markdown'")] = ResponseFormat.JSON,
+    ) -> str:
+        """Fetch full content and metadata of a Wiki.js page by its URL path.
 
-        Use this when you know the page's path but not its ID. Requires
-        administrator privileges on the Wiki.js API key.
-
-        Args:
-            params (GetPageByPathInput): Validated input containing:
-                - path (str): Page URL path, e.g. 'home' or 'guides/installation'
-                - locale (str): Locale code, e.g. 'en' (default 'en')
-                - response_format (str): 'json' or 'markdown'
+        Requires administrator privileges on the Wiki.js API key.
 
         Returns:
-            str: Full page data (same schema as wikijs_get_page).
+            JSON: same schema as wikijs_get_page.
 
         Examples:
-            - Get home page: path='home', locale='en'
-            - Get nested page: path='docs/api/overview'
+            - Get home page: path='home'
+            - Get nested page: path='docs/api/overview', locale='en'
         """
-        client = ctx.request_context.lifespan_state["client"]
+        client = _client(ctx)
         gql = f"""
         query GetPageByPath($path: String!, $locale: String!) {{
           pages {{
@@ -322,14 +288,12 @@ def register_page_tools(mcp: "FastMCP") -> None:
         }}
         """
         try:
-            data = await client.query(gql, {"path": params.path, "locale": params.locale})
+            data = await client.query(gql, {"path": path, "locale": locale})
             page = data["pages"]["singleByPath"]
             if page is None:
-                return f"Error: No page found at path '{params.path}' (locale: {params.locale})."
-
-            if params.response_format == ResponseFormat.MARKDOWN:
+                return f"Error: No page found at path '{path}' (locale: {locale})."
+            if response_format == ResponseFormat.MARKDOWN:
                 return _page_full_to_md(page)
-
             page["tags"] = [t["tag"] for t in (page.get("tags") or [])]
             return json.dumps(page, indent=2)
         except Exception as e:
@@ -345,94 +309,61 @@ def register_page_tools(mcp: "FastMCP") -> None:
             "openWorldHint": True,
         },
     )
-    async def wikijs_create_page(params: CreatePageInput, ctx: "Context") -> str:
+    async def wikijs_create_page(
+        ctx: Context,
+        title: Annotated[str, Field(description="Page title (e.g. 'Installation Guide')", min_length=1, max_length=255)],
+        path: Annotated[str, Field(description="URL path, no leading slash (e.g. 'guides/install')", min_length=1)],
+        content: Annotated[str, Field(description="Page body in Markdown format", min_length=1)],
+        description: Annotated[str, Field(description="Short page description/summary")] = "",
+        locale: Annotated[str, Field(description="Locale code, e.g. 'en'", min_length=2, max_length=10)] = "en",
+        editor: Annotated[str, Field(description="Editor type: 'markdown' (default), 'ckeditor', 'code', 'asciidoc'")] = "markdown",
+        is_published: Annotated[bool, Field(description="Publish immediately (default True)")] = True,
+        is_private: Annotated[bool, Field(description="Make page private (default False)")] = False,
+        tags: Annotated[Optional[List[str]], Field(description="Tags to attach to the page")] = None,
+    ) -> str:
         """Create a new page in Wiki.js.
 
-        Creates a page at the given path with Markdown content. The path must
-        not already exist. Returns the new page's ID and path on success.
-
-        Args:
-            params (CreatePageInput): Validated input containing:
-                - title (str): Page title (e.g. 'Installation Guide')
-                - path (str): URL path, no leading slash (e.g. 'guides/install')
-                - content (str): Page body in Markdown format
-                - description (str): Optional short description/summary
-                - locale (str): Locale code, default 'en'
-                - editor (str): 'markdown' (default), 'ckeditor', 'code', 'asciidoc'
-                - is_published (bool): Publish immediately, default True
-                - is_private (bool): Private page, default False
-                - tags (List[str]): Tags to attach, default []
+        The path must not already exist. Returns the new page's ID and path on success.
 
         Returns:
-            str: JSON with keys: succeeded, page_id, path, message.
-                 Error string on failure.
+            JSON: {succeeded, page_id, path, message}
 
         Examples:
-            - Create a Markdown guide: title='Setup Guide', path='setup',
-              content='# Setup\n\nFollow these steps...'
+            - Create a guide: title='Setup Guide', path='setup',
+              content='# Setup\\n\\nFollow these steps...'
         """
-        client = ctx.request_context.lifespan_state["client"]
+        client = _client(ctx)
         gql = """
         mutation CreatePage(
-          $title: String!
-          $path: String!
-          $content: String!
-          $description: String!
-          $locale: String!
-          $editor: String!
-          $isPublished: Boolean!
-          $isPrivate: Boolean!
+          $title: String! $path: String! $content: String! $description: String!
+          $locale: String! $editor: String! $isPublished: Boolean! $isPrivate: Boolean!
           $tags: [String]!
         ) {
           pages {
-            create(
-              title: $title
-              path: $path
-              content: $content
-              description: $description
-              locale: $locale
-              editor: $editor
-              isPublished: $isPublished
-              isPrivate: $isPrivate
-              tags: $tags
-            ) {
-              responseResult {
-                succeeded
-                errorCode
-                message
-              }
-              page {
-                id
-                path
-              }
+            create(title: $title path: $path content: $content description: $description
+                   locale: $locale editor: $editor isPublished: $isPublished
+                   isPrivate: $isPrivate tags: $tags) {
+              responseResult { succeeded errorCode message }
+              page { id path }
             }
           }
         }
         """
-        variables = {
-            "title": params.title,
-            "path": params.path,
-            "content": params.content,
-            "description": params.description or "",
-            "locale": params.locale,
-            "editor": params.editor,
-            "isPublished": params.is_published,
-            "isPrivate": params.is_private,
-            "tags": params.tags or [],
-        }
         try:
-            data = await client.mutate(gql, variables)
+            data = await client.mutate(gql, {
+                "title": title, "path": path.lstrip("/"), "content": content,
+                "description": description, "locale": locale, "editor": editor,
+                "isPublished": is_published, "isPrivate": is_private,
+                "tags": tags or [],
+            })
             payload = data["pages"]["create"]
             page = payload.get("page") or {}
-            return json.dumps(
-                {
-                    "succeeded": True,
-                    "page_id": page.get("id"),
-                    "path": page.get("path"),
-                    "message": payload["responseResult"].get("message") or "Page created successfully.",
-                },
-                indent=2,
-            )
+            return json.dumps({
+                "succeeded": True,
+                "page_id": page.get("id"),
+                "path": page.get("path"),
+                "message": payload["responseResult"].get("message") or "Page created successfully.",
+            }, indent=2)
         except Exception as e:
             return _handle_api_error(e)
 
@@ -446,109 +377,77 @@ def register_page_tools(mcp: "FastMCP") -> None:
             "openWorldHint": True,
         },
     )
-    async def wikijs_update_page(params: UpdatePageInput, ctx: "Context") -> str:
+    async def wikijs_update_page(
+        ctx: Context,
+        page_id: Annotated[int, Field(description="Numeric ID of the page to update", ge=1)],
+        title: Annotated[Optional[str], Field(description="New title, or omit to keep current")] = None,
+        content: Annotated[Optional[str], Field(description="New Markdown content, or omit to keep current")] = None,
+        description: Annotated[Optional[str], Field(description="New description, or omit to keep current")] = None,
+        tags: Annotated[Optional[List[str]], Field(description="Replacement tag list (replaces all existing tags), or omit to keep current")] = None,
+        is_published: Annotated[Optional[bool], Field(description="Change published status, or omit to keep current")] = None,
+        is_private: Annotated[Optional[bool], Field(description="Change private status, or omit to keep current")] = None,
+    ) -> str:
         """Update an existing Wiki.js page by ID.
 
-        Fetches the current page first to preserve unspecified fields, then
-        applies only the provided changes. At least one optional field must be
-        provided.
-
-        Args:
-            params (UpdatePageInput): Validated input containing:
-                - page_id (int): ID of the page to update (required)
-                - title (str): New title, or None to keep current
-                - content (str): New content body, or None to keep current
-                - description (str): New description, or None to keep current
-                - tags (List[str]): Replacement tag list, or None to keep current
-                - is_published (bool): Change publish status, or None to keep
-                - is_private (bool): Change private status, or None to keep
+        Fetches the current page first to preserve all unspecified fields.
+        At least one optional field should be provided.
 
         Returns:
-            str: JSON with keys: succeeded, page_id, message.
-                 Error string on failure.
+            JSON: {succeeded, page_id, message}
 
         Examples:
-            - Fix a typo: page_id=15, content='# Fixed\n\nCorrected text.'
-            - Unpublish a draft: page_id=15, is_published=False
+            - Fix content: page_id=15, content='# Fixed\\n\\nCorrected text.'
+            - Unpublish: page_id=15, is_published=False
             - Update tags: page_id=15, tags=['devops', 'linux']
         """
-        client = ctx.request_context.lifespan_state["client"]
+        client = _client(ctx)
 
-        # Fetch current state to fill in unspecified fields
+        # Fetch current state to preserve unspecified fields
         fetch_gql = f"""
         query GetPage($id: Int!) {{
-          pages {{
-            single(id: $id) {{
-              {_PAGE_FULL_FIELDS}
-            }}
-          }}
+          pages {{ single(id: $id) {{ {_PAGE_FULL_FIELDS} }} }}
         }}
         """
         try:
-            fetch_data = await client.query(fetch_gql, {"id": params.page_id})
+            fetch_data = await client.query(fetch_gql, {"id": page_id})
             current = fetch_data["pages"]["single"]
             if current is None:
-                return f"Error: Page with ID {params.page_id} not found."
+                return f"Error: Page with ID {page_id} not found."
         except Exception as e:
             return _handle_api_error(e)
 
         current_tags = [t["tag"] for t in (current.get("tags") or [])]
-
         gql = """
         mutation UpdatePage(
-          $id: Int!
-          $title: String!
-          $content: String!
-          $description: String!
-          $editor: String!
-          $isPublished: Boolean!
-          $isPrivate: Boolean!
-          $tags: [String]!
+          $id: Int! $title: String! $content: String! $description: String!
+          $editor: String! $isPublished: Boolean! $isPrivate: Boolean! $tags: [String]!
         ) {
           pages {
-            update(
-              id: $id
-              title: $title
-              content: $content
-              description: $description
-              editor: $editor
-              isPublished: $isPublished
-              isPrivate: $isPrivate
-              tags: $tags
-            ) {
-              responseResult {
-                succeeded
-                errorCode
-                message
-              }
-              page {
-                id
-              }
+            update(id: $id title: $title content: $content description: $description
+                   editor: $editor isPublished: $isPublished isPrivate: $isPrivate tags: $tags) {
+              responseResult { succeeded errorCode message }
+              page { id }
             }
           }
         }
         """
-        variables = {
-            "id": params.page_id,
-            "title": params.title if params.title is not None else current["title"],
-            "content": params.content if params.content is not None else current["content"],
-            "description": params.description if params.description is not None else (current.get("description") or ""),
-            "editor": current.get("editor", "markdown"),
-            "isPublished": params.is_published if params.is_published is not None else current.get("isPublished", True),
-            "isPrivate": params.is_private if params.is_private is not None else current.get("isPrivate", False),
-            "tags": params.tags if params.tags is not None else current_tags,
-        }
         try:
-            data = await client.mutate(gql, variables)
+            data = await client.mutate(gql, {
+                "id": page_id,
+                "title": title if title is not None else current["title"],
+                "content": content if content is not None else current["content"],
+                "description": description if description is not None else (current.get("description") or ""),
+                "editor": current.get("editor", "markdown"),
+                "isPublished": is_published if is_published is not None else current.get("isPublished", True),
+                "isPrivate": is_private if is_private is not None else current.get("isPrivate", False),
+                "tags": tags if tags is not None else current_tags,
+            })
             payload = data["pages"]["update"]
-            return json.dumps(
-                {
-                    "succeeded": True,
-                    "page_id": params.page_id,
-                    "message": payload["responseResult"].get("message") or "Page updated successfully.",
-                },
-                indent=2,
-            )
+            return json.dumps({
+                "succeeded": True,
+                "page_id": page_id,
+                "message": payload["responseResult"].get("message") or "Page updated successfully.",
+            }, indent=2)
         except Exception as e:
             return _handle_api_error(e)
 
@@ -562,47 +461,38 @@ def register_page_tools(mcp: "FastMCP") -> None:
             "openWorldHint": True,
         },
     )
-    async def wikijs_delete_page(params: DeletePageInput, ctx: "Context") -> str:
+    async def wikijs_delete_page(
+        ctx: Context,
+        page_id: Annotated[int, Field(description="Numeric ID of the page to delete", ge=1)],
+    ) -> str:
         """Permanently delete a Wiki.js page by ID. This action cannot be undone.
 
-        Use wikijs_get_page or wikijs_search_pages first to confirm the correct
-        page ID before deleting.
-
-        Args:
-            params (DeletePageInput): Validated input containing:
-                - page_id (int): Numeric ID of the page to delete
+        Use wikijs_search_pages or wikijs_get_page first to confirm the correct
+        page ID before calling this tool.
 
         Returns:
-            str: JSON with keys: succeeded, page_id, message.
-                 Error string on failure.
+            JSON: {succeeded, page_id, message}
 
         Examples:
             - Delete page 42: page_id=42
         """
-        client = ctx.request_context.lifespan_state["client"]
+        client = _client(ctx)
         gql = """
         mutation DeletePage($id: Int!) {
           pages {
             delete(id: $id) {
-              responseResult {
-                succeeded
-                errorCode
-                message
-              }
+              responseResult { succeeded errorCode message }
             }
           }
         }
         """
         try:
-            data = await client.mutate(gql, {"id": params.page_id})
+            data = await client.mutate(gql, {"id": page_id})
             payload = data["pages"]["delete"]
-            return json.dumps(
-                {
-                    "succeeded": True,
-                    "page_id": params.page_id,
-                    "message": payload["responseResult"].get("message") or "Page deleted successfully.",
-                },
-                indent=2,
-            )
+            return json.dumps({
+                "succeeded": True,
+                "page_id": page_id,
+                "message": payload["responseResult"].get("message") or "Page deleted successfully.",
+            }, indent=2)
         except Exception as e:
             return _handle_api_error(e)
