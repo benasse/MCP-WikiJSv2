@@ -15,6 +15,7 @@ build/
 .venv/
 venv/
 env/
+.envrc
 
 # OS
 .DS_Store
