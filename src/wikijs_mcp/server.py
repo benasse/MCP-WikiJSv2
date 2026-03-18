@@ -13,6 +13,7 @@ from typing import AsyncIterator
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -88,7 +89,25 @@ async def app_lifespan(server: FastMCP) -> AsyncIterator[dict]:
 # FastMCP instance
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("wikijs_mcp", lifespan=app_lifespan)
+def _build_transport_security() -> TransportSecuritySettings:
+    """Build transport security settings from environment.
+
+    Set MCP_ALLOWED_HOSTS to a comma-separated list of allowed Host header values
+    (supports wildcard ports via ':*', e.g. '192.168.1.72:*').
+    Leave unset or empty to disable DNS rebinding protection (safe when the server
+    is already protected by BearerAuthMiddleware on a private network).
+    """
+    raw = os.getenv("MCP_ALLOWED_HOSTS", "").strip()
+    if not raw:
+        return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    allowed = [h.strip() for h in raw.split(",") if h.strip()]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=allowed,
+    )
+
+
+mcp = FastMCP("wikijs_mcp", lifespan=app_lifespan, transport_security=_build_transport_security())
 register_page_tools(mcp)
 
 
