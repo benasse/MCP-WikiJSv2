@@ -15,12 +15,13 @@ class WikiJSClient:
     tool calls via the FastMCP lifespan mechanism.
     """
 
-    def __init__(self, base_url: str, api_key: str) -> None:
+    def __init__(self, base_url: str, api_key: str, verify_ssl: bool = True) -> None:
         self._url = base_url.rstrip("/") + _GQL_ENDPOINT
         self._headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        self._verify_ssl = verify_ssl
 
     async def query(
         self, gql: str, variables: Optional[Dict[str, Any]] = None
@@ -68,7 +69,11 @@ class WikiJSClient:
         if variables:
             payload["variables"] = variables
 
-        async with httpx.AsyncClient(headers=self._headers, timeout=_TIMEOUT) as client:
+        async with httpx.AsyncClient(
+            headers=self._headers,
+            timeout=_TIMEOUT,
+            verify=self._verify_ssl,
+        ) as client:
             response = await client.post(self._url, json=payload)
             response.raise_for_status()
 

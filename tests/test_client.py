@@ -94,6 +94,21 @@ async def test_query_sends_correct_url_and_payload(client):
     # Auth header passed to the client constructor
     constructor_kwargs = mock_cls.call_args.kwargs
     assert constructor_kwargs["headers"]["Authorization"] == "Bearer test-api-key"
+    assert constructor_kwargs["verify"] is True
+
+
+async def test_query_can_disable_tls_certificate_verification():
+    client = WikiJSClient("https://wiki.example.com", "test-api-key", verify_ssl=False)
+    resp = _make_response(data={})
+    mock_aclient = AsyncMock()
+    mock_aclient.post = AsyncMock(return_value=resp)
+    mock_aclient.__aenter__ = AsyncMock(return_value=mock_aclient)
+    mock_aclient.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("httpx.AsyncClient", return_value=mock_aclient) as mock_cls:
+        await client.query("query { test }")
+
+    assert mock_cls.call_args.kwargs["verify"] is False
 
 
 async def test_query_omits_variables_when_none(client):

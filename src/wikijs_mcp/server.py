@@ -54,6 +54,13 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ---------------------------------------------------------------------------
 # OAuth in-memory state (lost on restart — one-time re-auth required)
 # ---------------------------------------------------------------------------
@@ -110,9 +117,16 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 async def app_lifespan(server: FastMCP) -> AsyncIterator[dict]:
     wikijs_url = _require_env("WIKIJS_URL")
     wikijs_api_key = _require_env("WIKIJS_API_KEY")
+    trust_invalid_certs = _env_bool("WIKIJS_TRUST_INVALID_CERTS")
 
-    client = WikiJSClient(base_url=wikijs_url, api_key=wikijs_api_key)
+    client = WikiJSClient(
+        base_url=wikijs_url,
+        api_key=wikijs_api_key,
+        verify_ssl=not trust_invalid_certs,
+    )
     logger.info("Connected to Wiki.js at %s", wikijs_url)
+    if trust_invalid_certs:
+        logger.warning("WIKIJS_TRUST_INVALID_CERTS is enabled; TLS certificate verification is disabled for Wiki.js")
 
     yield {"client": client}
 

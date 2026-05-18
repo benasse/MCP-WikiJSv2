@@ -43,6 +43,7 @@ All configuration is via environment variables (`.env` file):
 | `MCP_API_KEY` | Yes | — | Bearer token that MCP clients use to authenticate to this server |
 | `WIKIJS_URL` | Yes | — | Base URL of your Wiki.js instance, e.g. `http://wikijs:3000` |
 | `WIKIJS_API_KEY` | Yes | — | API key from Wiki.js admin panel |
+| `WIKIJS_TRUST_INVALID_CERTS` | No | `false` | Set to `true` to disable TLS certificate verification for Wiki.js HTTPS connections |
 | `MCP_HOST` | No | `0.0.0.0` | Bind address |
 | `MCP_PORT` | No | `8000` | Port |
 | `LOG_LEVEL` | No | `INFO` | Log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
